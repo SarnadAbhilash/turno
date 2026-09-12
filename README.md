@@ -2,6 +2,18 @@
 
 Turno is a multilingual voice receptionist for a fictional clinic. A caller can speak in Hindi, English, Spanish, or a mix; interrupt the assistant; correct appointment details; hear available times; and confirm a booking.
 
+## Who it is for
+
+Turno is built for a small outpatient clinic that receives appointment-booking calls.
+
+- **Paying customer:** The clinic or medical practice.
+- **End user:** A patient calling to schedule an annual checkup or follow-up visit.
+- **Staff user:** A receptionist who monitors calls, confirmed appointments, and requests that need human help.
+
+Patients get a simple voice experience in their preferred language. The clinic gets fewer unanswered calls, less repetitive scheduling work, reliable bookings, and clear human handoffs.
+
+Turno is a scheduling receptionist, not a medical assistant. It does not diagnose symptoms, recommend treatment, perform triage, or make medical decisions.
+
 The central engineering idea is simple:
 
 > The AI handles the conversation. Normal, testable software controls the booking.

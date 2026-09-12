@@ -4,6 +4,20 @@
 
 Turno answers a clinic call, speaks with the caller, checks a real demo schedule, and safely books an appointment. The browser is both the caller's voice interface and the receptionist's live screen.
 
+## Customer and users
+
+Turno is built for a small outpatient clinic that receives appointment-booking calls.
+
+| Role | Who they are | Value they receive |
+| --- | --- | --- |
+| Customer | The clinic or medical practice | Fewer unanswered calls, less repetitive scheduling work, dependable records, and clear handoffs |
+| Caller | A patient scheduling an annual checkup or follow-up | Natural voice booking in Hindi, English, Spanish, or a mix, with clear readback and correction |
+| Staff user | The clinic receptionist | A live view of the conversation, tools, calendar, booking result, audit trail, and requests needing human help |
+
+The clinic is the likely buyer. The patient is the end user of the voice experience. The receptionist supervises the workflow and handles exceptions.
+
+Turno is a scheduling receptionist, not a medical assistant. Medical advice, diagnosis, treatment recommendations, triage, and insurance decisions are outside the product boundary and must be handed to a person.
+
 ## What makes the project different
 
 Voice, tool calling, and multilingual conversation are useful foundations, but they are not the final product claim. Turno demonstrates a reliability layer around a non-deterministic voice model.

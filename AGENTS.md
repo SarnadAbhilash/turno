@@ -8,6 +8,14 @@ Build Turno: a multilingual voice receptionist for a fictional clinic. The requi
 
 The model manages conversation. Trusted server code controls validation, availability, holds, confirmation, persistence, duplicate prevention, conflict recovery, and audit history.
 
+## Users and value
+
+- **Customer:** A small outpatient clinic or medical practice. The clinic benefits from fewer unanswered calls, less repetitive front-desk work, reliable booking records, and clear escalation.
+- **Caller:** A patient booking an annual checkup or follow-up visit. The caller benefits from a natural voice experience in Hindi, English, Spanish, or a mix.
+- **Staff user:** A receptionist watching call progress, bookings, and handoffs in the dashboard.
+
+Turno is limited to administrative scheduling. It is not a medical assistant and must not diagnose, triage, recommend treatment, or make medical decisions.
+
 ## Product differentiation
 
 Do not reduce Turno to “a voice bot that books an appointment.” General-purpose agents can already speak and call tools. Turno must visibly prove that a voice agent can complete a consequential workflow safely despite:
