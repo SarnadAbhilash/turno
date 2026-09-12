@@ -105,6 +105,36 @@ function attachPhoneSideband(callId: string, apiKey: string) {
     record.state = "connected";
     store.recordCallStatus(PHONE_CONVERSATION_ID, "Phone audio connected through Twilio and OpenAI SIP.", { channel: "phone" });
     send(socket, {
+      type: "session.update",
+      session: {
+        type: "realtime",
+        instructions: phoneVoiceInstructions,
+        output_modalities: ["audio"],
+        parallel_tool_calls: false,
+        tools: realtimeToolDefinitions,
+        tool_choice: "auto",
+        reasoning: { effort: "minimal" },
+        max_output_tokens: 600,
+        audio: {
+          input: {
+            noise_reduction: { type: "near_field" },
+            transcription: {
+              model: "gpt-transcribe",
+              languages: ["en", "hi", "es"],
+              prompt: "Harbor Clinic appointment scheduling with Dr. Elena Ruiz. The caller may speak English, Hindi, Spanish, or mix Hindi and English.",
+            },
+            turn_detection: {
+              type: "semantic_vad",
+              eagerness: "low",
+              create_response: true,
+              interrupt_response: true,
+            },
+          },
+          output: { voice: REALTIME_VOICE },
+        },
+      },
+    });
+    send(socket, {
       type: "response.create",
       response: {
         instructions: "Greet the caller now with the exact short Harbor Clinic phone greeting from your instructions, then ask how you can help.",
@@ -197,32 +227,8 @@ export async function acceptIncomingPhoneCall(callId: string) {
       model: REALTIME_MODEL,
       instructions: phoneVoiceInstructions,
       output_modalities: ["audio"],
-      parallel_tool_calls: false,
-      tools: realtimeToolDefinitions,
-      tool_choice: "auto",
-      reasoning: { effort: "minimal" },
-      max_output_tokens: 600,
       audio: {
-        input: {
-          noise_reduction: { type: "near_field" },
-          transcription: {
-            model: "gpt-transcribe",
-            languages: ["en", "hi", "es"],
-            prompt: "Harbor Clinic appointment scheduling with Dr. Elena Ruiz. The caller may speak English, Hindi, Spanish, or mix Hindi and English.",
-          },
-          turn_detection: {
-            type: "semantic_vad",
-            eagerness: "low",
-            create_response: true,
-            interrupt_response: true,
-          },
-        },
         output: { voice: REALTIME_VOICE },
-      },
-      tracing: {
-        workflow_name: "Turno phone receptionist",
-        group_id: `turno-phone-${startedAt}`,
-        metadata: { channel: "phone" },
       },
     });
     attachPhoneSideband(callId, apiKey);

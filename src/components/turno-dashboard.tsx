@@ -1,21 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { OpenAIRealtimeWebRTC, RealtimeAgent, RealtimeSession, tool } from "@openai/agents/realtime";
-import { z } from "zod";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CopilotBridge } from "@/components/copilot-bridge";
 import type { DashboardSnapshot, Slot, ToolResult, TurnoEvent } from "@/lib/domain";
-import { REALTIME_MODEL } from "@/lib/realtime-config";
-import { voiceInstructions } from "@/lib/voice-instructions";
 
-type CallStatus = "ready" | "connecting" | "live" | "demo" | "error";
-type VoicePhase = "idle" | "listening" | "hearing" | "thinking" | "speaking";
-type MicrophoneStatus = "unchecked" | "checking" | "ready" | "blocked";
 type TranscriptLine = { id: string; role: "caller" | "assistant"; text: string };
 
 const CONVERSATION_ID = "browser-demo";
-const CALL_CHANNEL_NAME = "turno-active-call";
 const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const WORKFLOW = [
+  { title: "Call received", caption: "Secure SIP" },
+  { title: "Understand", caption: "Live transcript" },
+  { title: "Check slots", caption: "Trusted schedule" },
+  { title: "Hold time", caption: "Temporary lock" },
+  { title: "Confirm", caption: "Clear yes required" },
+  { title: "Book", caption: "Exactly once" },
+] as const;
 
 async function readJsonResponse<T>(response: Response, operation: string): Promise<T> {
   const body = await response.text();
@@ -37,126 +38,57 @@ function timeLabel(startsAt: string) {
 
 function eventLabel(event: TurnoEvent) {
   const labels: Record<TurnoEvent["type"], string> = {
-    reset: "Reset",
-    call: "Phone call",
-    transcript: "Transcript",
-    search: "Availability",
-    hold: "Slot held",
-    clarification: "Safety gate",
-    booking: "Committed",
-    duplicate_blocked: "Retry blocked",
-    conflict: "Conflict",
-    recovery: "Recovered",
-    handoff: "Handoff",
+    reset: "Demo reset",
+    call: "Phone connection",
+    transcript: event.payload.role === "caller" ? "Caller understood" : "Turno replied",
+    search: "Calendar checked",
+    hold: "Slot protected",
+    clarification: "Confirmation blocked",
+    booking: "Booking committed",
+    duplicate_blocked: "Duplicate prevented",
+    conflict: "Conflict detected",
+    recovery: "Availability refreshed",
+    handoff: "Human handoff",
   };
   return labels[event.type];
 }
 
+function eventStage(event: TurnoEvent) {
+  const stages: Partial<Record<TurnoEvent["type"], number>> = {
+    call: 0,
+    transcript: 1,
+    search: 2,
+    conflict: 2,
+    recovery: 2,
+    hold: 3,
+    clarification: 4,
+    handoff: 4,
+    booking: 5,
+    duplicate_blocked: 5,
+  };
+  return stages[event.type] ?? -1;
+}
+
+function currentAction(snapshot: DashboardSnapshot | null, phoneActive: boolean) {
+  if (!snapshot) return { eyebrow: "Synchronizing", title: "Loading receptionist state", body: "Turno is connecting to the trusted operation log.", tone: "neutral" };
+  const booking = snapshot.bookings.find((item) => item.conversationId === CONVERSATION_ID);
+  if (booking) return { eyebrow: "Completed safely", title: "Appointment booked", body: "The confirmed slot was written once and the confirmation evidence was stored.", tone: "success" };
+  if (snapshot.status === "handoff") return { eyebrow: "Safe boundary", title: "Human follow-up created", body: "Turno stopped automation instead of inventing a medical answer.", tone: "warning" };
+  if (snapshot.status === "recovering") return { eyebrow: "Recovering", title: "Refreshing availability", body: "The original slot changed, so Turno is checking the live schedule again.", tone: "warning" };
+  if (snapshot.status === "clarifying") return { eyebrow: "Safety gate", title: "Waiting for a clear yes", body: "An ambiguous answer was blocked before any booking could be written.", tone: "warning" };
+  if (snapshot.status === "awaiting_confirmation" && snapshot.proposal) return { eyebrow: "Caller decision", title: `${timeLabel(snapshot.proposal.slot.startsAt)} is held`, body: "Turno has read back the details and is waiting for explicit confirmation.", tone: "active" };
+  if (snapshot.status === "searching") return { eyebrow: "Tool running", title: "Checking real availability", body: "Turno is querying the trusted schedule—not guessing from conversation context.", tone: "active" };
+  if (phoneActive) return { eyebrow: "Live phone call", title: "Listening to the caller", body: "Speech is transcribed as each turn completes. The latest turn is highlighted.", tone: "active" };
+  return { eyebrow: "Ready", title: "Waiting for the next call", body: "Call the connected Twilio number. The workflow will advance automatically.", tone: "neutral" };
+}
+
 export function TurnoDashboard() {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
-  const [callStatus, setCallStatus] = useState<CallStatus>("ready");
-  const [notice, setNotice] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
   const [demoBusy, setDemoBusy] = useState(false);
-  const [voicePhase, setVoicePhase] = useState<VoicePhase>("idle");
-  const [microphoneStatus, setMicrophoneStatus] = useState<MicrophoneStatus>("unchecked");
-  const [microphoneName, setMicrophoneName] = useState("Default microphone");
-  const [microphoneLevel, setMicrophoneLevel] = useState(0);
-  const sessionRef = useRef<RealtimeSession | null>(null);
-  const transportRef = useRef<OpenAIRealtimeWebRTC | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const outputAudioRef = useRef<HTMLAudioElement | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const meterFrameRef = useRef<number | null>(null);
-  const callChannelRef = useRef<BroadcastChannel | null>(null);
-  const tabIdRef = useRef(crypto.randomUUID());
-  const latestCallerRef = useRef<TranscriptLine | null>(null);
+  const transcriptEndRef = useRef<HTMLDivElement | null>(null);
   const transcriptWritesRef = useRef(new Map<string, Promise<void>>());
-
-  const stopBrowserAudio = useCallback(() => {
-    if (meterFrameRef.current !== null) window.cancelAnimationFrame(meterFrameRef.current);
-    meterFrameRef.current = null;
-    void audioContextRef.current?.close().catch(() => undefined);
-    audioContextRef.current = null;
-    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
-    mediaStreamRef.current = null;
-    if (outputAudioRef.current) outputAudioRef.current.srcObject = null;
-    setMicrophoneLevel(0);
-  }, []);
-
-  const openBrowserMicrophone = useCallback(async () => {
-    if (!window.isSecureContext) {
-      throw new Error("Microphone access requires a secure page. Open Turno at http://localhost:3100 or http://127.0.0.1:3100 in Chrome.");
-    }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error("This browser does not expose a microphone to Turno. Open the same address in Chrome or Safari.");
-    }
-
-    setMicrophoneStatus("checking");
-    setNotice("Waiting for microphone permission… choose Allow if your browser asks.");
-
-    let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
-    } catch (error) {
-      setMicrophoneStatus("blocked");
-      const name = error instanceof DOMException ? error.name : "";
-      if (name === "NotAllowedError" || name === "SecurityError") {
-        throw new Error("Microphone permission is blocked. Allow microphone access for this page, then press Start voice call again.");
-      }
-      if (name === "NotFoundError" || name === "DevicesNotFoundError") {
-        throw new Error("No microphone was found. Connect or enable a microphone, then try again.");
-      }
-      throw new Error(`The microphone could not start${name ? ` (${name})` : ""}. Try opening Turno in Chrome.`);
-    }
-
-    const track = stream.getAudioTracks()[0];
-    if (!track || track.readyState !== "live") {
-      stream.getTracks().forEach((item) => item.stop());
-      setMicrophoneStatus("blocked");
-      throw new Error("The browser granted access but did not provide a live microphone track.");
-    }
-
-    mediaStreamRef.current = stream;
-    setMicrophoneName(track.label || "Default microphone");
-    setMicrophoneStatus("ready");
-
-    track.addEventListener("ended", () => {
-      setMicrophoneStatus("blocked");
-      setNotice("The microphone stopped. End the call and start it again.");
-    });
-
-    try {
-      const AudioContextConstructor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (AudioContextConstructor) {
-        const context = new AudioContextConstructor();
-        audioContextRef.current = context;
-        await context.resume();
-        const source = context.createMediaStreamSource(stream);
-        const analyser = context.createAnalyser();
-        analyser.fftSize = 512;
-        source.connect(analyser);
-        const samples = new Uint8Array(analyser.fftSize);
-        const updateMeter = () => {
-          analyser.getByteTimeDomainData(samples);
-          let energy = 0;
-          for (const sample of samples) {
-            const normalized = (sample - 128) / 128;
-            energy += normalized * normalized;
-          }
-          setMicrophoneLevel(Math.min(100, Math.round(Math.sqrt(energy / samples.length) * 360)));
-          meterFrameRef.current = window.requestAnimationFrame(updateMeter);
-        };
-        updateMeter();
-      }
-    } catch {
-      // The live call still works if a browser will not expose Web Audio for the visual meter.
-    }
-
-    return stream;
-  }, []);
 
   const refresh = useCallback(async () => {
     const response = await fetch(`/api/dashboard?conversationId=${encodeURIComponent(CONVERSATION_ID)}`, { cache: "no-store" });
@@ -175,34 +107,14 @@ export function TurnoDashboard() {
   }, []);
 
   useEffect(() => {
-    const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(CALL_CHANNEL_NAME);
-    callChannelRef.current = channel;
-    if (channel) {
-      channel.onmessage = (event: MessageEvent<{ type?: string; tabId?: string }>) => {
-        if (event.data?.type !== "claim" || event.data.tabId === tabIdRef.current) return;
-        if (!sessionRef.current && !mediaStreamRef.current) return;
-        sessionRef.current?.close();
-        sessionRef.current = null;
-        transportRef.current = null;
-        stopBrowserAudio();
-        setCallStatus("error");
-        setVoicePhase("idle");
-        setMicrophoneStatus("unchecked");
-        setNotice("This call ended because Turno was started in another browser tab. Keep only one Turno call active.");
-      };
-    }
     void refresh().catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
-    const interval = window.setInterval(() => void refresh().catch(() => undefined), 900);
-    return () => {
-      window.clearInterval(interval);
-      sessionRef.current?.close();
-      sessionRef.current = null;
-      transportRef.current = null;
-      stopBrowserAudio();
-      channel?.close();
-      callChannelRef.current = null;
-    };
-  }, [refresh, stopBrowserAudio]);
+    const interval = window.setInterval(() => void refresh().catch(() => undefined), 650);
+    return () => window.clearInterval(interval);
+  }, [refresh]);
+
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [transcript.length]);
 
   const callTool = useCallback(async (toolName: string, argumentsValue: Record<string, unknown>) => {
     const response = await fetch("/api/tools", {
@@ -237,23 +149,14 @@ export function TurnoDashboard() {
 
   const addLine = useCallback(async (role: TranscriptLine["role"], text: string) => {
     const line = { id: crypto.randomUUID(), role, text };
-    if (role === "caller") latestCallerRef.current = line;
     setTranscript((current) => [...current, line]);
     await recordTranscript(line);
     return line;
   }, [recordTranscript]);
 
   const reset = useCallback(async () => {
-    sessionRef.current?.close();
-    sessionRef.current = null;
-    transportRef.current = null;
-    stopBrowserAudio();
-    setCallStatus("ready");
-    setVoicePhase("idle");
-    setMicrophoneStatus("unchecked");
-    setTranscript([]);
     setNotice(null);
-    latestCallerRef.current = null;
+    setTranscript([]);
     transcriptWritesRef.current.clear();
     const response = await fetch("/api/dashboard", {
       method: "POST",
@@ -263,7 +166,7 @@ export function TurnoDashboard() {
     const result = await readJsonResponse<Record<string, unknown>>(response, "Resetting the demo");
     await refresh();
     return result;
-  }, [refresh, stopBrowserAudio]);
+  }, [refresh]);
 
   const simulateConflict = useCallback(async () => {
     const response = await fetch("/api/dashboard", {
@@ -276,174 +179,17 @@ export function TurnoDashboard() {
     return result;
   }, [refresh]);
 
-  const connectVoice = useCallback(async () => {
-    setCallStatus("connecting");
-    setNotice(null);
-    try {
-      callChannelRef.current?.postMessage({ type: "claim", tabId: tabIdRef.current });
-      await pause(100);
-      stopBrowserAudio();
-      const mediaStream = await openBrowserMicrophone();
-      const tokenResponse = await fetch("/api/realtime-token", { method: "POST" });
-      const token = await readJsonResponse<{ value?: string; error?: string }>(tokenResponse, "Starting the voice session");
-      if (!tokenResponse.ok || !token.value) throw new Error(token.error || "Could not start the voice session.");
-
-      const searchSlots = tool({
-        name: "search_slots",
-        description: "Search the trusted clinic schedule using the caller's exact requested date, time window, and appointment type. Today is 2026-09-12 and next Tuesday is 2026-09-15. Times use 24-hour HH:mm. Never substitute Tuesday for today.",
-        parameters: z.object({
-          date: z.string().describe("Exact requested date in YYYY-MM-DD."),
-          earliestTime: z.string().describe("Inclusive start of requested window in 24-hour HH:mm."),
-          latestTime: z.string().describe("Exclusive end of requested window in 24-hour HH:mm."),
-          appointmentType: z.enum(["Annual checkup", "Follow-up visit"]),
-        }),
-        execute: async (argumentsValue) => JSON.stringify(await callTool("search_slots", argumentsValue)),
-      });
-      const holdSlot = tool({
-        name: "hold_slot",
-        description: "Temporarily hold one slot selected from search_slots. Read back only the returned proposal details.",
-        parameters: z.object({ slotId: z.string() }),
-        execute: async (argumentsValue) => JSON.stringify(await callTool("hold_slot", argumentsValue)),
-      });
-      const confirmBooking = tool({
-        name: "confirm_booking",
-        description: "Commit the current proposal only after the caller states their name and clearly confirms the complete appointment readback. patientName must be the name the caller actually provided; never invent or substitute a demo name. The server checks the latest authoritative caller transcript and prevents duplicates.",
-        parameters: z.object({
-          proposalId: z.string(),
-          patientName: z.string().trim().min(1).describe("The caller's name exactly as they stated it during this live conversation."),
-        }),
-        execute: async (argumentsValue) => {
-          if (latestCallerRef.current) await recordTranscript(latestCallerRef.current);
-          return JSON.stringify(await callTool("confirm_booking", argumentsValue));
-        },
-      });
-      const createHandoff = tool({
-        name: "create_handoff",
-        description: "Create a receptionist handoff for medical advice, urgent, unsupported, uncertain, or failed requests.",
-        parameters: z.object({ reason: z.string(), summary: z.string() }),
-        execute: async (argumentsValue) => JSON.stringify(await callTool("create_handoff", argumentsValue)),
-      });
-
-      const agent = new RealtimeAgent({
-        name: "Turno",
-        instructions: voiceInstructions,
-        tools: [searchSlots, holdSlot, confirmBooking, createHandoff],
-      });
-      const outputAudio = outputAudioRef.current;
-      if (!outputAudio) throw new Error("The speaker output could not be initialized. Reload the page and try again.");
-      outputAudio.autoplay = true;
-      outputAudio.muted = false;
-      outputAudio.volume = 1;
-      const transport = new OpenAIRealtimeWebRTC({ mediaStream, audioElement: outputAudio });
-      const session = new RealtimeSession(agent, {
-        transport,
-        model: REALTIME_MODEL,
-        config: {
-          audio: {
-            input: {
-              noiseReduction: { type: "near_field" },
-              transcription: {
-                model: "gpt-transcribe",
-                languages: ["en", "hi", "es"],
-                prompt: "Harbor Clinic appointment scheduling with Dr. Elena Ruiz. The caller may speak English, Hindi, Spanish, or mix Hindi and English.",
-              },
-              turnDetection: {
-                type: "semantic_vad",
-                eagerness: "low",
-                createResponse: true,
-                interruptResponse: false,
-              },
-            },
-          },
-          reasoning: { effort: "minimal" },
-        },
-      });
-      session.on("history_updated", (history) => {
-        const lines: TranscriptLine[] = history
-          .filter((item) => item.type === "message")
-          .map((item) => {
-            const text = item.content.map((part) => "transcript" in part ? part.transcript || "" : "text" in part ? part.text : "").join(" ").trim();
-            return { id: item.itemId || crypto.randomUUID(), role: item.role === "user" ? "caller" as const : "assistant" as const, text };
-          })
-          .filter((line) => Boolean(line.text));
-        setTranscript(lines);
-        const latestCaller = [...lines].reverse().find((line) => line.role === "caller");
-        if (latestCaller) latestCallerRef.current = latestCaller;
-        for (const line of lines) void recordTranscript(line).catch(() => undefined);
-      });
-      session.on("transport_event", (event) => {
-        if (event.type === "input_audio_buffer.speech_started") setVoicePhase("hearing");
-        if (event.type === "input_audio_buffer.speech_stopped") setVoicePhase("thinking");
-        if (event.type === "conversation.item.input_audio_transcription.completed") setVoicePhase("thinking");
-      });
-      session.on("agent_tool_start", () => setVoicePhase("thinking"));
-      session.on("audio_start", () => {
-        transport.mute(true);
-        setVoicePhase("speaking");
-      });
-      session.on("audio_stopped", () => {
-        transport.mute(false);
-        setVoicePhase("listening");
-      });
-      session.on("error", (event) => {
-        setNotice(String((event as { error?: unknown }).error || event));
-        setCallStatus("error");
-        setVoicePhase("idle");
-      });
-      await session.connect({ apiKey: token.value });
-      sessionRef.current = session;
-      transportRef.current = transport;
-      setCallStatus("live");
-      setVoicePhase("listening");
-      setNotice("Microphone is live. Speak normally and watch the green input meter move.");
-      void outputAudio.play().catch(() => {
-        setNotice("Microphone is live. If you do not hear Turno, press Play on the speaker control below.");
-      });
-      transport.requestResponse({ instructions: "Greet the caller in one short English sentence, say you are Turno from Harbor Clinic, and ask how you can help." });
-    } catch (error) {
-      sessionRef.current?.close();
-      sessionRef.current = null;
-      transportRef.current = null;
-      stopBrowserAudio();
-      setNotice(error instanceof Error ? error.message : String(error));
-      setCallStatus("error");
-    }
-  }, [callTool, openBrowserMicrophone, recordTranscript, stopBrowserAudio]);
-
-  const disconnectVoice = useCallback(() => {
-    sessionRef.current?.close();
-    sessionRef.current = null;
-    transportRef.current = null;
-    stopBrowserAudio();
-    setCallStatus("ready");
-    setVoicePhase("idle");
-    setMicrophoneStatus("unchecked");
-  }, [stopBrowserAudio]);
-
-  const testSpeaker = useCallback(() => {
-    const transport = transportRef.current;
-    if (!transport) return;
-    setVoicePhase("thinking");
-    setNotice("Speaker test sent. Turno should answer aloud in a moment.");
-    void outputAudioRef.current?.play().catch(() => {
-      setNotice("Press Play on the speaker control, then press Test speaker again.");
-    });
-    transport.requestResponse({ instructions: "Reply aloud with exactly: Turno audio test successful." });
-  }, []);
-
   const runGuidedDemo = useCallback(async () => {
     setDemoBusy(true);
     setNotice(null);
     try {
       await reset();
-      setCallStatus("demo");
       await addLine("caller", "Namaste, mujhe Dr. Ruiz ke saath next Tuesday afternoon appointment chahiye, lekin teen baje ke baad nahi.");
       await pause(450);
       await callTool("search_slots", { date: "2026-09-15", earliestTime: "12:00", latestTime: "15:00", appointmentType: "Follow-up visit" });
       await addLine("assistant", "Ji. Mere paas afternoon mein kuch real available times hain.");
       await pause(450);
       await addLine("caller", "Actually, do baje ke baad chahiye—but before three.");
-      await pause(350);
       const searched = await callTool("search_slots", { date: "2026-09-15", earliestTime: "14:00", latestTime: "15:00", appointmentType: "Follow-up visit" });
       const slots = searched.ok ? searched.slots as Slot[] : [];
       const chosen = slots[0];
@@ -461,12 +207,10 @@ export function TurnoDashboard() {
       const booked = await callTool("confirm_booking", { proposalId: proposal.proposalId, patientName: "Asha Kumar" });
       if (!booked.ok) throw new Error(booked.message);
       await addLine("assistant", "Aapki appointment book ho gayi hai. Confirmation receptionist screen par dikh raha hai.");
-      await pause(500);
       await callTool("confirm_booking", { proposalId: proposal.proposalId, patientName: "Asha Kumar" });
-      setNotice("Reliability demo complete: correction applied, ambiguity blocked, and retry returned one booking.");
+      setNotice("Reliability proof complete: correction applied, ambiguity blocked, and retry created no duplicate.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
-      setCallStatus("error");
     } finally {
       setDemoBusy(false);
       await refresh();
@@ -478,7 +222,6 @@ export function TurnoDashboard() {
     setNotice(null);
     try {
       await reset();
-      setCallStatus("demo");
       await addLine("caller", "Please book the 2:15 appointment.");
       const held = await callTool("hold_slot", { slotId: "slot-1415" });
       if (!held.ok) throw new Error(held.message);
@@ -488,16 +231,15 @@ export function TurnoDashboard() {
       await addLine("caller", "Yes, please book it.");
       const conflict = await callTool("confirm_booking", { proposalId: proposal.proposalId, patientName: "Asha Kumar" });
       if (conflict.ok) throw new Error("Expected the controlled conflict to block the booking.");
-      await addLine("assistant", "I’m sorry, that slot was just taken. I’ll check the current schedule.");
+      await addLine("assistant", "That slot was just taken. I’ll check the current schedule.");
       const recovered = await callTool("search_slots", { date: "2026-09-15", earliestTime: "14:00", latestTime: "15:00", appointmentType: "Follow-up visit" });
       if (!recovered.ok) throw new Error(recovered.message);
       const recoveredSlots = recovered.slots as Slot[];
       if (!recoveredSlots[0]) throw new Error("No recovery slot remained in the demo schedule.");
       await addLine("assistant", `I found another real opening at ${timeLabel(recoveredSlots[0].startsAt)}.`);
-      setNotice("Conflict recovery proven: no false success was shown, and Turno offered new current availability.");
+      setNotice("Conflict recovery proven: Turno showed no false success and offered a current slot.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
-      setCallStatus("error");
     } finally {
       setDemoBusy(false);
       await refresh();
@@ -506,6 +248,7 @@ export function TurnoDashboard() {
 
   const runHandoffDemo = useCallback(async () => {
     setDemoBusy(true);
+    setNotice(null);
     try {
       await addLine("caller", "My chest hurts. Should I wait until next week?");
       await callTool("create_handoff", { reason: "medical_question", summary: "Caller asked for medical guidance; Turno did not answer and requested human help." });
@@ -517,85 +260,144 @@ export function TurnoDashboard() {
     }
   }, [addLine, callTool, refresh]);
 
+  const conversationEvents = useMemo(
+    () => snapshot?.events.filter((event) => event.conversationId === CONVERSATION_ID) || [],
+    [snapshot],
+  );
+  const lastCallEvent = [...conversationEvents].reverse().find((event) => event.type === "call");
+  const phoneActive = Boolean(lastCallEvent && !/(ended|failed|could not)/i.test(lastCallEvent.message));
   const activeBooking = snapshot?.bookings.find((booking) => booking.conversationId === CONVERSATION_ID) || null;
-  const events = snapshot?.events.filter((event) => event.conversationId === CONVERSATION_ID || event.conversationId === "system").slice(-9).reverse() || [];
-  const statusText = callStatus === "live" ? "Live" : callStatus === "connecting" ? "Connecting" : callStatus === "demo" ? "Guided demo" : callStatus === "error" ? "Needs attention" : "Ready";
-  const voicePhaseText = voicePhase === "hearing" ? "Hearing you…" : voicePhase === "thinking" ? "Thinking…" : voicePhase === "speaking" ? "Turno is speaking" : "Microphone connected";
+  const activeSlotId = snapshot?.proposal?.slot.id || activeBooking?.slotId || null;
+  const action = currentAction(snapshot, phoneActive);
+  const hasStarted = conversationEvents.some((event) => eventStage(event) >= 0);
+  const stageIndex = activeBooking ? 5 : hasStarted ? Math.max(0, ...conversationEvents.map(eventStage)) : -1;
+  const activity = conversationEvents.filter((event) => event.type !== "transcript").slice(-7).reverse();
+  const counts = {
+    open: snapshot?.slots.filter((slot) => slot.status === "available").length || 0,
+    held: snapshot?.slots.filter((slot) => slot.status === "held").length || 0,
+    booked: snapshot?.slots.filter((slot) => slot.status === "booked").length || 0,
+  };
+  const latestTranscriptId = transcript.at(-1)?.id;
+  const callBadge = phoneActive ? "Call in progress" : activeBooking ? "Call completed" : "Ready for a call";
 
   return (
     <main className="shell">
       <CopilotBridge snapshot={snapshot} reset={reset} simulateConflict={simulateConflict} />
+
       <header className="topbar">
-        <div className="brand"><span className="brand-mark" aria-hidden="true">T</span><div><strong>Turno</strong><span>Clinic voice operations</span></div></div>
-        <div className="system-status"><i /> Server safeguards active</div>
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">T</span>
+          <div><strong>Turno</strong><span>Reliable multilingual scheduling</span></div>
+        </div>
+        <div className="topbar-actions">
+          <span className="system-status"><i /> Signed webhook · safeguards active</span>
+          <button type="button" className="quiet-button" onClick={reset} disabled={demoBusy}>Reset demo</button>
+        </div>
       </header>
 
-      <section className="workspace" aria-label="Turno receptionist workspace">
-        <aside className="call-panel">
-          <div className="section-label">Live call</div>
-          <div className="caller-row">
-            <div className="caller-avatar">AK</div>
-            <div><h1>Appointment call</h1><p>Browser or phone · Hindi + English</p></div>
-            <span className={`call-state call-state-${callStatus}`}>{statusText}</span>
+      <section className="demo-shell" aria-label="Turno live receptionist dashboard">
+        <div className="demo-intro">
+          <div>
+            <div className="section-label">Live phone receptionist</div>
+            <h1>Watch the appointment happen</h1>
+            <p>Call the connected number. Every transcript turn, tool action, safeguard, and schedule change appears here.</p>
           </div>
+          <div className={`call-badge ${phoneActive ? "call-badge-live" : ""}`}>
+            <span className="live-dot" />
+            <div><strong>{callBadge}</strong><small>{phoneActive ? "Twilio → OpenAI → Turno" : "Phone channel connected"}</small></div>
+          </div>
+        </div>
 
-          <div className={`voice-stage voice-stage-${callStatus}`}>
-            <div className="voice-orbit" aria-hidden="true"><span className="voice-core" /><span className="voice-ring voice-ring-one" /><span className="voice-ring voice-ring-two" /></div>
-            <p>{callStatus === "live" ? voicePhaseText : callStatus === "connecting" ? "Opening a secure call" : callStatus === "demo" ? "Showing the reliable flow" : "Turno is ready to listen"}</p>
-            <span>{callStatus === "live" ? (voicePhase === "listening" ? "Say your request now. This label changes when Turno detects speech." : "The conversation and trusted activity will update below.") : `Voice uses ${REALTIME_MODEL}. The guided demo works without an API key.`}</span>
-            {(callStatus === "connecting" || callStatus === "live") && (
-              <div className="microphone-check" aria-live="polite">
-                <div><i className={`microphone-dot microphone-dot-${microphoneStatus}`} /><strong>{microphoneStatus === "checking" ? "Checking microphone" : microphoneStatus === "ready" ? microphoneName : "Microphone not ready"}</strong></div>
-                <div className="microphone-meter" aria-label={`Microphone input level ${microphoneLevel} percent`}><span style={{ width: `${microphoneLevel}%` }} /></div>
-                <small>Speak and confirm the green bar moves</small>
+        <section className="workflow-card" aria-label="Booking workflow">
+          <div className="workflow-heading">
+            <div><span>Current stage</span><strong>{action.title}</strong></div>
+            <p>{action.body}</p>
+          </div>
+          <div className="workflow-steps">
+            {WORKFLOW.map((step, index) => {
+              const state = index < stageIndex ? "complete" : index === stageIndex ? "active" : "waiting";
+              return (
+                <div className={`workflow-step workflow-step-${state}`} key={step.title}>
+                  <span>{state === "complete" ? "✓" : index + 1}</span>
+                  <div><strong>{step.title}</strong><small>{step.caption}</small></div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {notice && <div className="notice" role="status">{notice}</div>}
+
+        <div className="live-grid">
+          <section className="transcript-card live-transcript-card">
+            <div className="card-heading transcript-heading">
+              <div><h2>Live transcript</h2><p>The current completed turn is highlighted and kept in view.</p></div>
+              <span className={phoneActive ? "stream-state stream-state-live" : "stream-state"}>{phoneActive ? "● LIVE" : transcript.length ? `${transcript.length} turns` : "Waiting"}</span>
+            </div>
+            {transcript.length ? (
+              <div className="transcript-list" aria-live="polite">
+                {transcript.map((line) => (
+                  <article className={`transcript-line transcript-${line.role} ${line.id === latestTranscriptId ? "transcript-current" : ""}`} key={line.id}>
+                    <div className="speaker-mark" aria-hidden="true">{line.role === "caller" ? "C" : "T"}</div>
+                    <div><strong>{line.role === "caller" ? "Caller" : "Turno"}</strong><p>{line.text}</p></div>
+                    {line.id === latestTranscriptId && <span className="current-turn-label">Current turn</span>}
+                  </article>
+                ))}
+                <div ref={transcriptEndRef} />
+              </div>
+            ) : (
+              <div className="empty-transcript">
+                <span className="empty-wave" aria-hidden="true"><i /><i /><i /><i /><i /></span>
+                <strong>Waiting for the caller</strong>
+                <p>The conversation will appear here automatically when a phone call begins.</p>
               </div>
             )}
-          </div>
 
-          {callStatus === "live" ? (
-            <div className="live-call-actions"><button className="start-call end-call" type="button" onClick={disconnectVoice}>End voice call</button><button className="speaker-test" type="button" onClick={testSpeaker}>Test speaker</button></div>
-          ) : (
-            <button className="start-call" type="button" onClick={connectVoice} disabled={callStatus === "connecting" || demoBusy}><span className="phone-icon" aria-hidden="true">●</span>{callStatus === "connecting" ? "Connecting…" : "Start voice call"}</button>
-          )}
-          <audio ref={outputAudioRef} className={callStatus === "live" ? "call-audio call-audio-live" : "call-audio"} autoPlay playsInline controls aria-label="Turno speaker output" />
-          <button className="demo-button" type="button" onClick={runGuidedDemo} disabled={demoBusy || callStatus === "live"}>{demoBusy ? "Running proof…" : "Run guided reliability demo"}</button>
-          <div className="language-row" aria-label="Supported languages"><span>हिंदी</span><span>English</span><span>Español</span></div>
-
-          {notice && <div className="notice" role="status">{notice}</div>}
-
-          <section className="transcript-card">
-            <div className="card-heading"><h2>Conversation</h2><span>{transcript.length ? `${transcript.length} turns` : "Waiting"}</span></div>
-            {transcript.length ? (
-              <div className="transcript-list">{transcript.slice(-7).map((line) => <article className={`transcript-line transcript-${line.role}`} key={line.id}><strong>{line.role === "caller" ? "Caller" : "Turno"}</strong><p>{line.text}</p></article>)}</div>
-            ) : (
-              <div className="empty-transcript"><span className="quote-mark">“</span><p>The live transcript and corrections will appear here.</p></div>
-            )}
+            <div className="activity-panel">
+              <div className="card-heading"><h2>Agent actions</h2><span>Authoritative server events</span></div>
+              {activity.length ? (
+                <div className="activity-list">
+                  {activity.map((event, index) => (
+                    <article className={index === 0 ? "activity-current" : ""} key={event.id}>
+                      <span className={`event-dot event-${event.type}`} />
+                      <time>{new Date(event.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}</time>
+                      <div><strong>{eventLabel(event)}</strong><p>{event.message}</p></div>
+                    </article>
+                  ))}
+                </div>
+              ) : <div className="activity-empty">Tool calls and safety decisions will appear here.</div>}
+            </div>
           </section>
-        </aside>
 
-        <section className="operations">
-          <div className="operations-head">
-            <div><div className="section-label">Receptionist view</div><h2>Tuesday, September 15</h2><p>Dr. Elena Ruiz · Harbor Clinic · Synthetic demo data</p></div>
-            <button type="button" className="quiet-button" onClick={reset} disabled={demoBusy}>Reset demo</button>
-          </div>
+          <aside className="right-rail">
+            <section className={`current-action current-action-${action.tone}`}>
+              <span>{action.eyebrow}</span>
+              <strong>{action.title}</strong>
+              <p>{action.body}</p>
+            </section>
 
-          <div className="proof-strip">
-            <div className={snapshot?.events.some((event) => event.type === "transcript") ? "proof-active" : ""}><span>01</span><strong>Listen</strong><small>Natural voice</small></div>
-            <div className={snapshot?.events.some((event) => event.type === "search") ? "proof-active" : ""}><span>02</span><strong>Verify</strong><small>Real availability</small></div>
-            <div className={snapshot?.reliability.ambiguityCaught ? "proof-active" : ""}><span>03</span><strong>Confirm</strong><small>Explicit yes</small></div>
-            <div className={activeBooking ? "proof-active" : ""}><span>04</span><strong>Commit</strong><small>Exactly once</small></div>
-          </div>
+            {activeBooking && (
+              <section className="booking-banner">
+                <span className="booking-check">✓</span>
+                <div><small>Appointment confirmed</small><strong>{activeBooking.id}</strong><p>Persisted once with confirmation evidence</p></div>
+              </section>
+            )}
 
-          {activeBooking && <div className="booking-banner"><div><span>Appointment confirmed</span><strong>{activeBooking.id}</strong></div><p>Persisted once · confirmation evidence recorded</p></div>}
-
-          <div className="operation-grid">
             <section className="calendar-card">
-              <div className="card-heading"><h2>Afternoon schedule</h2><span>{snapshot?.slots.length || 0} slots</span></div>
+              <div className="card-heading schedule-heading">
+                <div><h2>Clinic schedule</h2><p>Tuesday, September 15 · Dr. Elena Ruiz</p></div>
+                <span>Synthetic data</span>
+              </div>
+              <div className="slot-summary" aria-label="Schedule summary">
+                <div><strong>{counts.open}</strong><span>Open</span></div>
+                <div><strong>{counts.held}</strong><span>Held</span></div>
+                <div><strong>{counts.booked}</strong><span>Booked</span></div>
+              </div>
               <div className="slot-list">
                 {(snapshot?.slots || []).map((slot) => (
-                  <div className={`slot slot-${slot.status}`} key={slot.id}>
+                  <div className={`slot slot-${slot.status} ${slot.id === activeSlotId ? "slot-current" : ""}`} key={slot.id}>
                     <time>{timeLabel(slot.startsAt)}</time>
-                    <div><strong>{slot.patientName || slot.appointmentType}</strong><span>{slot.status === "held" && slot.heldBy === CONVERSATION_ID ? "Held for this caller" : slot.status}</span></div>
+                    <div><strong>{slot.patientName || slot.appointmentType}</strong><span>{slot.status === "held" && slot.heldBy === CONVERSATION_ID ? "Protected for this caller" : slot.appointmentType}</span></div>
                     <b>{slot.status === "available" ? "Open" : slot.status === "held" ? "Held" : "Booked"}</b>
                   </div>
                 ))}
@@ -603,22 +405,20 @@ export function TurnoDashboard() {
             </section>
 
             <section className="evidence-card">
-              <div className="card-heading"><h2>Safety evidence</h2><span>Live</span></div>
-              <div className="evidence-list">
-                <article><i className="evidence-ok" /><div><strong>No booking without confirmation</strong><p>Server-enforced boundary</p></div></article>
-                <article><i className={snapshot?.reliability.retryBlocked ? "evidence-ok" : "evidence-idle"} /><div><strong>Duplicate protection</strong><p>{snapshot?.reliability.retryBlocked ? "Retry returned the same booking" : "Ready to prove exactly once"}</p></div></article>
-                <article><i className={snapshot?.reliability.conflictRecovered ? "evidence-ok" : "evidence-idle"} /><div><strong>Conflict recovery</strong><p>{snapshot?.reliability.conflictRecovered ? "New real availability offered" : "No false success on lost slots"}</p></div></article>
-                <article><i className={snapshot?.reliability.handoffCreated ? "evidence-ok" : "evidence-idle"} /><div><strong>Human handoff</strong><p>{snapshot?.reliability.handoffCreated ? "Unsupported request escalated" : "No invented medical answers"}</p></div></article>
+              <div className="card-heading"><h2>Production safeguards</h2><span>Server enforced</span></div>
+              <div className="evidence-grid">
+                <article className="evidence-proven"><i>✓</i><div><strong>Signed webhook</strong><p>Rejects untrusted call events</p></div></article>
+                <article className="evidence-proven"><i>✓</i><div><strong>Confirmation gate</strong><p>No clear yes, no booking</p></div></article>
+                <article className={snapshot?.reliability.retryBlocked ? "evidence-proven" : ""}><i>{snapshot?.reliability.retryBlocked ? "✓" : "○"}</i><div><strong>Exactly-once write</strong><p>{snapshot?.reliability.retryBlocked ? "Duplicate retry proven" : "Unique commit key ready"}</p></div></article>
+                <article className={snapshot?.reliability.handoffCreated ? "evidence-proven" : ""}><i>{snapshot?.reliability.handoffCreated ? "✓" : "○"}</i><div><strong>Human handoff</strong><p>No invented medical advice</p></div></article>
               </div>
-              <div className="evidence-actions"><button type="button" onClick={runConflictDemo} disabled={demoBusy || callStatus === "live"}>Prove conflict recovery</button><button type="button" onClick={runHandoffDemo} disabled={demoBusy || callStatus === "live"}>Create safe handoff</button></div>
+              <details className="demo-controls">
+                <summary>Optional reliability scenarios</summary>
+                <div><button type="button" onClick={runGuidedDemo} disabled={demoBusy}>{demoBusy ? "Running…" : "Run end-to-end proof"}</button><button type="button" onClick={runConflictDemo} disabled={demoBusy}>Inject slot conflict</button><button type="button" onClick={runHandoffDemo} disabled={demoBusy}>Test safe handoff</button></div>
+              </details>
             </section>
-          </div>
-
-          <section className="activity-card">
-            <div className="card-heading"><h2>Trusted activity</h2><span>Server events only</span></div>
-            {events.length ? <div className="activity-list">{events.map((event) => <article key={event.id}><span className={`event-dot event-${event.type}`} /><time>{new Date(event.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}</time><strong>{eventLabel(event)}</strong><p>{event.message}</p></article>)}</div> : <div className="activity-empty"><span>Waiting for the first call</span><p>Searches, holds, confirmations, bookings, retries, and handoffs will be recorded here.</p></div>}
-          </section>
-        </section>
+          </aside>
+        </div>
       </section>
     </main>
   );
