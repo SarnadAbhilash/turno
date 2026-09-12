@@ -6,13 +6,21 @@ The central engineering idea is simple:
 
 > The AI handles the conversation. Normal, testable software controls the booking.
 
+## What makes Turno different
+
+A general-purpose voice agent can talk and call a calendar tool. Turno focuses on the harder problem: completing a consequential transaction safely when the caller interrupts, changes their mind, responds ambiguously, or causes the same action to be retried.
+
+> Turno is a reliability layer for real-world voice transactions, demonstrated through appointment scheduling.
+
 ## What the demo should prove
 
 - A caller has a natural voice conversation in the browser.
 - Turno understands a correction made during the conversation.
 - Availability comes from the scheduling service, not from the model.
 - Turno reads back the full appointment and waits for a clear confirmation.
+- An ambiguous response asks for clarification and cannot create a booking.
 - The booking is stored exactly once, even if confirmation is repeated.
+- If a held slot is lost, Turno explains the conflict and offers a new real slot.
 - A receptionist dashboard shows the transcript, tool activity, calendar, booking, and audit trail.
 - Unsupported or uncertain requests become a human handoff instead of a fabricated answer.
 

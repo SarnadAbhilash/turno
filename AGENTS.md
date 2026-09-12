@@ -6,7 +6,20 @@ This file gives any coding agent enough context to contribute safely. It is a ne
 
 Build Turno: a multilingual voice receptionist for a fictional clinic. The required experience is a browser voice conversation in Hindi, English, Spanish, or a mix. The caller can correct details, hear real seeded availability, confirm an appointment, and see the booking appear on a receptionist dashboard.
 
-The model manages conversation. Trusted server code controls validation, availability, holds, confirmation, persistence, duplicate prevention, and audit history.
+The model manages conversation. Trusted server code controls validation, availability, holds, confirmation, persistence, duplicate prevention, conflict recovery, and audit history.
+
+## Product differentiation
+
+Do not reduce Turno to “a voice bot that books an appointment.” General-purpose agents can already speak and call tools. Turno must visibly prove that a voice agent can complete a consequential workflow safely despite:
+
+- language switching;
+- interruption and mid-conversation correction;
+- ambiguous confirmation;
+- repeated or retried tool calls;
+- a slot conflict or expired hold;
+- an unsupported, unsafe, or uncertain request.
+
+The dashboard and deterministic tests are part of the product evidence. They should make the difference between model conversation and trusted server action understandable to a judge.
 
 ## Working principles
 
@@ -28,14 +41,17 @@ The model manages conversation. Trusted server code controls validation, availab
 6. Read back provider, appointment type, full date, time, and location.
 7. Require explicit confirmation before any booking write.
 8. Store the booking exactly once.
-9. Update the receptionist dashboard from trusted server events.
-10. Create a human handoff for unsafe, unsupported, ambiguous, or failed requests.
+9. Recover from a lost or expired slot by explaining the problem and offering new real availability.
+10. Update the receptionist dashboard from trusted server events.
+11. Create a human handoff for unsafe, unsupported, ambiguous, or failed requests.
 
 ## Non-negotiable safety rules
 
 - The model cannot write directly to the database.
-- A booking cannot happen without explicit confirmation tied to the current proposal.
+- A booking cannot happen without explicit confirmation tied to the current proposal and an authoritative final caller transcript event.
+- Ambiguous phrases such as “maybe,” “I think so,” or “that could work” cannot count as confirmation.
 - Repeated or retried confirmation cannot create a duplicate booking.
+- Confirmation for an old or changed proposal cannot book the new proposal.
 - A slot shown as booked in the UI must already be committed in the database.
 - The assistant does not diagnose, triage, recommend treatment, or verify insurance.
 - Use synthetic demo data only.
@@ -52,6 +68,9 @@ These rules protect correctness; they do not require contributors to wait. Use m
 - Store timestamps as ISO strings. Speak and display appointments in `America/Los_Angeles`.
 - Every tool request returns exactly one structured success or typed error.
 - Every successful state change emits an audit event.
+- A proposal has a unique `proposalId`; confirmation evidence must name that same proposal.
+- A commit uses a stable idempotency key so a retry returns the original booking.
+- `SLOT_UNAVAILABLE` and `HOLD_EXPIRED` return the conversation to search/recovery instead of reporting success.
 - Browser and optional phone sessions use the same tools and booking gateway.
 
 ## Recommended source layout
@@ -93,10 +112,19 @@ Add or preserve tests for the behavior a change affects. The minimum determinist
 - a changed proposal invalidates old confirmation;
 - retrying the same commit returns the existing booking;
 - competing commits create at most one booking;
+- a lost or expired hold returns a typed error and allows a new search;
 - failed persistence never appears as success in the UI;
 - unsafe or unsupported requests create a handoff.
 
 Also keep scripted multilingual scenarios for English, Spanish-English, Devanagari Hindi, and Romanized Hindi/Hinglish.
+
+The minimum end-to-end reliability scenarios are:
+
+1. **Correction:** the caller changes the requested time and only the corrected constraint is used.
+2. **Ambiguity:** an unclear response causes clarification and no database write.
+3. **Exactly once:** repeated confirmation or a replayed commit produces one booking ID.
+4. **Conflict recovery:** the selected slot becomes unavailable and Turno offers a new real slot.
+5. **Safe handoff:** an unsupported or medically substantive request becomes a visible handoff.
 
 ## Optional work
 
