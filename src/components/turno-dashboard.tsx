@@ -13,6 +13,7 @@ type MicrophoneStatus = "unchecked" | "checking" | "ready" | "blocked";
 type TranscriptLine = { id: string; role: "caller" | "assistant"; text: string };
 
 const CONVERSATION_ID = "browser-demo";
+const CALL_CHANNEL_NAME = "turno-active-call";
 const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 async function readJsonResponse<T>(response: Response, operation: string): Promise<T> {
@@ -28,24 +29,37 @@ async function readJsonResponse<T>(response: Response, operation: string): Promi
 const voiceInstructions = `
 You are Turno, a voice receptionist for the fictional Harbor Clinic in Los Angeles.
 You help callers schedule an annual checkup or follow-up visit with Dr. Elena Ruiz.
-Speak in the caller's language: Hindi, English, Spanish, or a natural mix. Keep each response short and warm.
 Today is Saturday, September 12, 2026. Next Tuesday is September 15, 2026.
 
+CONVERSATION STYLE:
+- Sound like a calm, concise human receptionist. Speak at a steady pace and finish every sentence.
+- Use at most two short sentences per turn and ask only one question at a time.
+- Determine the language from the first clear, complete caller request: English, Hindi, Spanish, or a natural mix. Keep that language for the whole call unless the caller explicitly asks to switch.
+- Never switch language because of a short, noisy, or unintelligible fragment.
+- Treat speech as a caller turn only when it is coherent and directed at the receptionist. For unclear, garbled, or unrelated background speech, do not infer intent and do not use a tool. Briefly say you did not catch that and repeat the one question currently awaiting an answer.
+
+FOLLOW THIS STATE MACHINE:
+1. REQUEST: collect the requested date and time window.
+2. TYPE: collect either annual checkup or follow-up visit.
+3. SEARCH: call search_slots once the request is complete, then offer only returned times.
+4. SELECTION: after the caller selects a returned time, call hold_slot.
+5. NAME: collect the caller's name. Never invent it.
+6. READBACK: say the caller name, appointment type, doctor, date, time, and clinic once. Ask for a clear yes or no.
+7. COMMIT: only after a clear yes, call confirm_booking exactly once and report its result.
+- Remember completed steps. Do not ask again unless the caller corrects that detail.
+- If the caller changes the time before confirmation, return to SEARCH and use the corrected constraint.
+
 RELIABILITY RULES:
-- Match the caller's language exactly. If the caller speaks only English, reply only in English. Do not switch languages unprompted.
 - Never replace the caller's requested date or time. "Today" means 2026-09-12 and "next Tuesday" means 2026-09-15.
-- If the caller did not say whether this is an annual checkup or follow-up visit, ask that before searching.
 - Never invent availability. Call search_slots and use only returned slots.
 - If search_slots returns no slots, clearly say none match the requested constraints and ask whether the caller wants a different date or time.
-- When the caller selects a slot, call hold_slot. Read back the returned appointment details.
 - After every tool result, immediately tell the caller the outcome aloud. Never leave a tool result without a spoken follow-up.
-- Before asking for final confirmation, collect the caller's name if they have not already provided it. Repeat the name back with the appointment details.
 - Never guess, infer, or substitute a caller name. "Asha Kumar" exists only in the separate guided demo and must never be used as a live-call default.
-- Ask for a clear yes or no. Call confirm_booking only after the caller provided their name and then gave a clear affirmative response.
 - If confirmation is ambiguous, ask a short clarification question. Never claim success without a booking ID.
 - If a slot is unavailable or the hold expired, apologize, search again, and offer a new real slot.
 - Repeated confirmation may return the existing booking. Explain that no duplicate was made.
 - Do not give medical advice, diagnosis, triage, treatment, or insurance decisions. Call create_handoff instead.
+- For unrelated non-clinic requests, say you can only help with Harbor Clinic appointments and ask whether the caller wants to continue. Do not create a handoff.
 - Never read IDs aloud. The receptionist can see them on screen.
 `;
 
@@ -89,6 +103,8 @@ export function TurnoDashboard() {
   const outputAudioRef = useRef<HTMLAudioElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const meterFrameRef = useRef<number | null>(null);
+  const callChannelRef = useRef<BroadcastChannel | null>(null);
+  const tabIdRef = useRef(crypto.randomUUID());
   const latestCallerRef = useRef<TranscriptLine | null>(null);
   const transcriptWritesRef = useRef(new Map<string, Promise<void>>());
 
@@ -186,6 +202,22 @@ export function TurnoDashboard() {
   }, []);
 
   useEffect(() => {
+    const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(CALL_CHANNEL_NAME);
+    callChannelRef.current = channel;
+    if (channel) {
+      channel.onmessage = (event: MessageEvent<{ type?: string; tabId?: string }>) => {
+        if (event.data?.type !== "claim" || event.data.tabId === tabIdRef.current) return;
+        if (!sessionRef.current && !mediaStreamRef.current) return;
+        sessionRef.current?.close();
+        sessionRef.current = null;
+        transportRef.current = null;
+        stopBrowserAudio();
+        setCallStatus("error");
+        setVoicePhase("idle");
+        setMicrophoneStatus("unchecked");
+        setNotice("This call ended because Turno was started in another browser tab. Keep only one Turno call active.");
+      };
+    }
     void refresh().catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
     const interval = window.setInterval(() => void refresh().catch(() => undefined), 900);
     return () => {
@@ -194,6 +226,8 @@ export function TurnoDashboard() {
       sessionRef.current = null;
       transportRef.current = null;
       stopBrowserAudio();
+      channel?.close();
+      callChannelRef.current = null;
     };
   }, [refresh, stopBrowserAudio]);
 
@@ -273,6 +307,8 @@ export function TurnoDashboard() {
     setCallStatus("connecting");
     setNotice(null);
     try {
+      callChannelRef.current?.postMessage({ type: "claim", tabId: tabIdRef.current });
+      await pause(100);
       stopBrowserAudio();
       const mediaStream = await openBrowserMicrophone();
       const tokenResponse = await fetch("/api/realtime-token", { method: "POST" });
@@ -326,7 +362,29 @@ export function TurnoDashboard() {
       outputAudio.muted = false;
       outputAudio.volume = 1;
       const transport = new OpenAIRealtimeWebRTC({ mediaStream, audioElement: outputAudio });
-      const session = new RealtimeSession(agent, { transport, model: REALTIME_MODEL });
+      const session = new RealtimeSession(agent, {
+        transport,
+        model: REALTIME_MODEL,
+        config: {
+          audio: {
+            input: {
+              noiseReduction: { type: "near_field" },
+              transcription: {
+                model: "gpt-transcribe",
+                languages: ["en", "hi", "es"],
+                prompt: "Harbor Clinic appointment scheduling with Dr. Elena Ruiz. The caller may speak English, Hindi, Spanish, or mix Hindi and English.",
+              },
+              turnDetection: {
+                type: "semantic_vad",
+                eagerness: "low",
+                createResponse: true,
+                interruptResponse: false,
+              },
+            },
+          },
+          reasoning: { effort: "minimal" },
+        },
+      });
       session.on("history_updated", (history) => {
         const lines: TranscriptLine[] = history
           .filter((item) => item.type === "message")
@@ -346,8 +404,14 @@ export function TurnoDashboard() {
         if (event.type === "conversation.item.input_audio_transcription.completed") setVoicePhase("thinking");
       });
       session.on("agent_tool_start", () => setVoicePhase("thinking"));
-      session.on("audio_start", () => setVoicePhase("speaking"));
-      session.on("audio_stopped", () => setVoicePhase("listening"));
+      session.on("audio_start", () => {
+        transport.mute(true);
+        setVoicePhase("speaking");
+      });
+      session.on("audio_stopped", () => {
+        transport.mute(false);
+        setVoicePhase("listening");
+      });
       session.on("error", (event) => {
         setNotice(String((event as { error?: unknown }).error || event));
         setCallStatus("error");
