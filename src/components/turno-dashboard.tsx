@@ -107,9 +107,24 @@ export function TurnoDashboard() {
   }, []);
 
   useEffect(() => {
-    void refresh().catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
-    const interval = window.setInterval(() => void refresh().catch(() => undefined), 650);
-    return () => window.clearInterval(interval);
+    let stopped = false;
+    let timeout: number | undefined;
+
+    const poll = async (showError = false) => {
+      try {
+        await refresh();
+      } catch (error) {
+        if (showError && !stopped) setNotice(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (!stopped) timeout = window.setTimeout(() => void poll(), 750);
+      }
+    };
+
+    void poll(true);
+    return () => {
+      stopped = true;
+      if (timeout) window.clearTimeout(timeout);
+    };
   }, [refresh]);
 
   useEffect(() => {
