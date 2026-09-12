@@ -49,11 +49,26 @@ button { font: inherit; }
 .voice-ring-two { inset: 0; border-color: #dfe5f6; }
 .voice-stage p { margin: 0 0 5px; font-size: 17px; font-weight: 760; letter-spacing: -0.015em; }
 .voice-stage > span { max-width: 290px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.microphone-check { width: min(100%, 290px); margin-top: 16px; padding: 10px 12px; border: 1px solid #dce4e5; border-radius: 11px; background: rgba(255,255,255,.78); }
+.microphone-check > div:first-child { display: flex; align-items: center; justify-content: center; gap: 7px; }
+.microphone-check strong { min-width: 0; overflow: hidden; color: #3d4c52; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.microphone-check small { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
+.microphone-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #aeb9bd; }
+.microphone-dot-checking { background: var(--amber); }
+.microphone-dot-ready { background: var(--teal); box-shadow: 0 0 0 3px rgba(21,152,121,.12); }
+.microphone-dot-blocked { background: #b94a40; }
+.microphone-meter { height: 7px; margin-top: 8px; overflow: hidden; border-radius: 999px; background: #e8eeee; }
+.microphone-meter span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #22a983, #67c98f); transition: width 80ms linear; }
 .start-call { width: 100%; min-height: 52px; border: 0; border-radius: 14px; display: flex; align-items: center; justify-content: center; gap: 10px; background: var(--blue); color: white; font-weight: 780; cursor: pointer; box-shadow: 0 10px 20px rgba(49, 87, 213, 0.2); }
 .start-call:hover { background: #284bc1; transform: translateY(-1px); }
 .start-call:disabled, .demo-button:disabled, .quiet-button:disabled, .evidence-actions button:disabled { cursor: not-allowed; opacity: .58; transform: none; }
 .end-call { background: #25363c; box-shadow: 0 10px 20px rgba(18, 33, 38, 0.16); }
 .end-call:hover { background: #17272c; }
+.live-call-actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.speaker-test { min-width: 104px; border: 1px solid #cfd8f6; border-radius: 14px; background: var(--blue-soft); color: #2949b7; font-size: 12px; font-weight: 760; cursor: pointer; }
+.speaker-test:hover { background: #e4eaff; }
+.call-audio { display: none; width: 100%; height: 36px; margin-top: 8px; }
+.call-audio-live { display: block; }
 .phone-icon { font-size: 9px; border: 2px solid white; border-radius: 50%; padding: 2px; }
 .demo-button { width: 100%; min-height: 43px; margin-top: 9px; border: 1px solid #cfd8f6; border-radius: 12px; background: var(--blue-soft); color: #2949b7; font-size: 13px; font-weight: 760; cursor: pointer; }
 .demo-button:hover { background: #e4eaff; }

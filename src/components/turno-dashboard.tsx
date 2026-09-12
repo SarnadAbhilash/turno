@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RealtimeAgent, RealtimeSession, tool } from "@openai/agents/realtime";
+import { OpenAIRealtimeWebRTC, RealtimeAgent, RealtimeSession, tool } from "@openai/agents/realtime";
 import { z } from "zod";
 import { CopilotBridge } from "@/components/copilot-bridge";
 import type { DashboardSnapshot, Slot, ToolResult, TurnoEvent } from "@/lib/domain";
@@ -9,6 +9,7 @@ import { REALTIME_MODEL } from "@/lib/realtime-config";
 
 type CallStatus = "ready" | "connecting" | "live" | "demo" | "error";
 type VoicePhase = "idle" | "listening" | "hearing" | "thinking" | "speaking";
+type MicrophoneStatus = "unchecked" | "checking" | "ready" | "blocked";
 type TranscriptLine = { id: string; role: "caller" | "assistant"; text: string };
 
 const CONVERSATION_ID = "browser-demo";
@@ -77,9 +78,102 @@ export function TurnoDashboard() {
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [demoBusy, setDemoBusy] = useState(false);
   const [voicePhase, setVoicePhase] = useState<VoicePhase>("idle");
+  const [microphoneStatus, setMicrophoneStatus] = useState<MicrophoneStatus>("unchecked");
+  const [microphoneName, setMicrophoneName] = useState("Default microphone");
+  const [microphoneLevel, setMicrophoneLevel] = useState(0);
   const sessionRef = useRef<RealtimeSession | null>(null);
+  const transportRef = useRef<OpenAIRealtimeWebRTC | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const outputAudioRef = useRef<HTMLAudioElement | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const meterFrameRef = useRef<number | null>(null);
   const latestCallerRef = useRef<TranscriptLine | null>(null);
   const transcriptWritesRef = useRef(new Map<string, Promise<void>>());
+
+  const stopBrowserAudio = useCallback(() => {
+    if (meterFrameRef.current !== null) window.cancelAnimationFrame(meterFrameRef.current);
+    meterFrameRef.current = null;
+    void audioContextRef.current?.close().catch(() => undefined);
+    audioContextRef.current = null;
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+    if (outputAudioRef.current) outputAudioRef.current.srcObject = null;
+    setMicrophoneLevel(0);
+  }, []);
+
+  const openBrowserMicrophone = useCallback(async () => {
+    if (!window.isSecureContext) {
+      throw new Error("Microphone access requires a secure page. Open Turno at http://localhost:3100 or http://127.0.0.1:3100 in Chrome.");
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("This browser does not expose a microphone to Turno. Open the same address in Chrome or Safari.");
+    }
+
+    setMicrophoneStatus("checking");
+    setNotice("Waiting for microphone permission… choose Allow if your browser asks.");
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+    } catch (error) {
+      setMicrophoneStatus("blocked");
+      const name = error instanceof DOMException ? error.name : "";
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        throw new Error("Microphone permission is blocked. Allow microphone access for this page, then press Start voice call again.");
+      }
+      if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+        throw new Error("No microphone was found. Connect or enable a microphone, then try again.");
+      }
+      throw new Error(`The microphone could not start${name ? ` (${name})` : ""}. Try opening Turno in Chrome.`);
+    }
+
+    const track = stream.getAudioTracks()[0];
+    if (!track || track.readyState !== "live") {
+      stream.getTracks().forEach((item) => item.stop());
+      setMicrophoneStatus("blocked");
+      throw new Error("The browser granted access but did not provide a live microphone track.");
+    }
+
+    mediaStreamRef.current = stream;
+    setMicrophoneName(track.label || "Default microphone");
+    setMicrophoneStatus("ready");
+
+    track.addEventListener("ended", () => {
+      setMicrophoneStatus("blocked");
+      setNotice("The microphone stopped. End the call and start it again.");
+    });
+
+    try {
+      const AudioContextConstructor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (AudioContextConstructor) {
+        const context = new AudioContextConstructor();
+        audioContextRef.current = context;
+        await context.resume();
+        const source = context.createMediaStreamSource(stream);
+        const analyser = context.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+        const samples = new Uint8Array(analyser.fftSize);
+        const updateMeter = () => {
+          analyser.getByteTimeDomainData(samples);
+          let energy = 0;
+          for (const sample of samples) {
+            const normalized = (sample - 128) / 128;
+            energy += normalized * normalized;
+          }
+          setMicrophoneLevel(Math.min(100, Math.round(Math.sqrt(energy / samples.length) * 360)));
+          meterFrameRef.current = window.requestAnimationFrame(updateMeter);
+        };
+        updateMeter();
+      }
+    } catch {
+      // The live call still works if a browser will not expose Web Audio for the visual meter.
+    }
+
+    return stream;
+  }, []);
 
   const refresh = useCallback(async () => {
     const response = await fetch(`/api/dashboard?conversationId=${encodeURIComponent(CONVERSATION_ID)}`, { cache: "no-store" });
@@ -96,8 +190,10 @@ export function TurnoDashboard() {
       window.clearInterval(interval);
       sessionRef.current?.close();
       sessionRef.current = null;
+      transportRef.current = null;
+      stopBrowserAudio();
     };
-  }, [refresh]);
+  }, [refresh, stopBrowserAudio]);
 
   const callTool = useCallback(async (toolName: string, argumentsValue: Record<string, unknown>) => {
     const response = await fetch("/api/tools", {
@@ -141,8 +237,11 @@ export function TurnoDashboard() {
   const reset = useCallback(async () => {
     sessionRef.current?.close();
     sessionRef.current = null;
+    transportRef.current = null;
+    stopBrowserAudio();
     setCallStatus("ready");
     setVoicePhase("idle");
+    setMicrophoneStatus("unchecked");
     setTranscript([]);
     setNotice(null);
     latestCallerRef.current = null;
@@ -155,7 +254,7 @@ export function TurnoDashboard() {
     const result = await readJsonResponse<Record<string, unknown>>(response, "Resetting the demo");
     await refresh();
     return result;
-  }, [refresh]);
+  }, [refresh, stopBrowserAudio]);
 
   const simulateConflict = useCallback(async () => {
     const response = await fetch("/api/dashboard", {
@@ -172,6 +271,8 @@ export function TurnoDashboard() {
     setCallStatus("connecting");
     setNotice(null);
     try {
+      stopBrowserAudio();
+      const mediaStream = await openBrowserMicrophone();
       const tokenResponse = await fetch("/api/realtime-token", { method: "POST" });
       const token = await readJsonResponse<{ value?: string; error?: string }>(tokenResponse, "Starting the voice session");
       if (!tokenResponse.ok || !token.value) throw new Error(token.error || "Could not start the voice session.");
@@ -214,7 +315,13 @@ export function TurnoDashboard() {
         instructions: voiceInstructions,
         tools: [searchSlots, holdSlot, confirmBooking, createHandoff],
       });
-      const session = new RealtimeSession(agent, { transport: "webrtc", model: REALTIME_MODEL });
+      const outputAudio = outputAudioRef.current;
+      if (!outputAudio) throw new Error("The speaker output could not be initialized. Reload the page and try again.");
+      outputAudio.autoplay = true;
+      outputAudio.muted = false;
+      outputAudio.volume = 1;
+      const transport = new OpenAIRealtimeWebRTC({ mediaStream, audioElement: outputAudio });
+      const session = new RealtimeSession(agent, { transport, model: REALTIME_MODEL });
       session.on("history_updated", (history) => {
         const lines: TranscriptLine[] = history
           .filter((item) => item.type === "message")
@@ -243,19 +350,43 @@ export function TurnoDashboard() {
       });
       await session.connect({ apiKey: token.value });
       sessionRef.current = session;
+      transportRef.current = transport;
       setCallStatus("live");
       setVoicePhase("listening");
+      setNotice("Microphone is live. Speak normally and watch the green input meter move.");
+      void outputAudio.play().catch(() => {
+        setNotice("Microphone is live. If you do not hear Turno, press Play on the speaker control below.");
+      });
+      transport.requestResponse({ instructions: "Greet the caller in one short English sentence, say you are Turno from Harbor Clinic, and ask how you can help." });
     } catch (error) {
+      sessionRef.current?.close();
+      sessionRef.current = null;
+      transportRef.current = null;
+      stopBrowserAudio();
       setNotice(error instanceof Error ? error.message : String(error));
       setCallStatus("error");
     }
-  }, [callTool, recordTranscript]);
+  }, [callTool, openBrowserMicrophone, recordTranscript, stopBrowserAudio]);
 
   const disconnectVoice = useCallback(() => {
     sessionRef.current?.close();
     sessionRef.current = null;
+    transportRef.current = null;
+    stopBrowserAudio();
     setCallStatus("ready");
     setVoicePhase("idle");
+    setMicrophoneStatus("unchecked");
+  }, [stopBrowserAudio]);
+
+  const testSpeaker = useCallback(() => {
+    const transport = transportRef.current;
+    if (!transport) return;
+    setVoicePhase("thinking");
+    setNotice("Speaker test sent. Turno should answer aloud in a moment.");
+    void outputAudioRef.current?.play().catch(() => {
+      setNotice("Press Play on the speaker control, then press Test speaker again.");
+    });
+    transport.requestResponse({ instructions: "Reply aloud with exactly: Turno audio test successful." });
   }, []);
 
   const runGuidedDemo = useCallback(async () => {
@@ -370,13 +501,21 @@ export function TurnoDashboard() {
             <div className="voice-orbit" aria-hidden="true"><span className="voice-core" /><span className="voice-ring voice-ring-one" /><span className="voice-ring voice-ring-two" /></div>
             <p>{callStatus === "live" ? voicePhaseText : callStatus === "connecting" ? "Opening a secure call" : callStatus === "demo" ? "Showing the reliable flow" : "Turno is ready to listen"}</p>
             <span>{callStatus === "live" ? (voicePhase === "listening" ? "Say your request now. This label changes when Turno detects speech." : "The conversation and trusted activity will update below.") : `Voice uses ${REALTIME_MODEL}. The guided demo works without an API key.`}</span>
+            {(callStatus === "connecting" || callStatus === "live") && (
+              <div className="microphone-check" aria-live="polite">
+                <div><i className={`microphone-dot microphone-dot-${microphoneStatus}`} /><strong>{microphoneStatus === "checking" ? "Checking microphone" : microphoneStatus === "ready" ? microphoneName : "Microphone not ready"}</strong></div>
+                <div className="microphone-meter" aria-label={`Microphone input level ${microphoneLevel} percent`}><span style={{ width: `${microphoneLevel}%` }} /></div>
+                <small>Speak and confirm the green bar moves</small>
+              </div>
+            )}
           </div>
 
           {callStatus === "live" ? (
-            <button className="start-call end-call" type="button" onClick={disconnectVoice}>End voice call</button>
+            <div className="live-call-actions"><button className="start-call end-call" type="button" onClick={disconnectVoice}>End voice call</button><button className="speaker-test" type="button" onClick={testSpeaker}>Test speaker</button></div>
           ) : (
             <button className="start-call" type="button" onClick={connectVoice} disabled={callStatus === "connecting" || demoBusy}><span className="phone-icon" aria-hidden="true">●</span>{callStatus === "connecting" ? "Connecting…" : "Start voice call"}</button>
           )}
+          <audio ref={outputAudioRef} className={callStatus === "live" ? "call-audio call-audio-live" : "call-audio"} autoPlay playsInline controls aria-label="Turno speaker output" />
           <button className="demo-button" type="button" onClick={runGuidedDemo} disabled={demoBusy || callStatus === "live"}>{demoBusy ? "Running proof…" : "Run guided reliability demo"}</button>
           <div className="language-row" aria-label="Supported languages"><span>हिंदी</span><span>English</span><span>Español</span></div>
 
