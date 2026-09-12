@@ -8,6 +8,7 @@ import type { DashboardSnapshot, Slot, ToolResult, TurnoEvent } from "@/lib/doma
 import { REALTIME_MODEL } from "@/lib/realtime-config";
 
 type CallStatus = "ready" | "connecting" | "live" | "demo" | "error";
+type VoicePhase = "idle" | "listening" | "hearing" | "thinking" | "speaking";
 type TranscriptLine = { id: string; role: "caller" | "assistant"; text: string };
 
 const CONVERSATION_ID = "browser-demo";
@@ -30,8 +31,13 @@ Speak in the caller's language: Hindi, English, Spanish, or a natural mix. Keep 
 Today is Saturday, September 12, 2026. Next Tuesday is September 15, 2026.
 
 RELIABILITY RULES:
+- Match the caller's language exactly. If the caller speaks only English, reply only in English. Do not switch languages unprompted.
+- Never replace the caller's requested date or time. "Today" means 2026-09-12 and "next Tuesday" means 2026-09-15.
+- If the caller did not say whether this is an annual checkup or follow-up visit, ask that before searching.
 - Never invent availability. Call search_slots and use only returned slots.
+- If search_slots returns no slots, clearly say none match the requested constraints and ask whether the caller wants a different date or time.
 - When the caller selects a slot, call hold_slot. Read back the returned appointment details.
+- After every tool result, immediately tell the caller the outcome aloud. Never leave a tool result without a spoken follow-up.
 - Ask for a clear yes or no. Call confirm_booking only after a clear affirmative response.
 - If confirmation is ambiguous, ask a short clarification question. Never claim success without a booking ID.
 - If a slot is unavailable or the hold expired, apologize, search again, and offer a new real slot.
@@ -70,6 +76,7 @@ export function TurnoDashboard() {
   const [notice, setNotice] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [demoBusy, setDemoBusy] = useState(false);
+  const [voicePhase, setVoicePhase] = useState<VoicePhase>("idle");
   const sessionRef = useRef<RealtimeSession | null>(null);
   const latestCallerRef = useRef<TranscriptLine | null>(null);
   const transcriptWritesRef = useRef(new Map<string, Promise<void>>());
@@ -135,6 +142,7 @@ export function TurnoDashboard() {
     sessionRef.current?.close();
     sessionRef.current = null;
     setCallStatus("ready");
+    setVoicePhase("idle");
     setTranscript([]);
     setNotice(null);
     latestCallerRef.current = null;
@@ -170,12 +178,12 @@ export function TurnoDashboard() {
 
       const searchSlots = tool({
         name: "search_slots",
-        description: "Search the trusted clinic schedule. Use 2026-09-15 for next Tuesday in this demo. Times use 24-hour HH:mm.",
+        description: "Search the trusted clinic schedule using the caller's exact requested date, time window, and appointment type. Today is 2026-09-12 and next Tuesday is 2026-09-15. Times use 24-hour HH:mm. Never substitute Tuesday for today.",
         parameters: z.object({
-          date: z.string().default("2026-09-15"),
-          earliestTime: z.string().default("00:00"),
-          latestTime: z.string().default("23:59"),
-          appointmentType: z.string().default("Follow-up visit"),
+          date: z.string().describe("Exact requested date in YYYY-MM-DD."),
+          earliestTime: z.string().describe("Inclusive start of requested window in 24-hour HH:mm."),
+          latestTime: z.string().describe("Exclusive end of requested window in 24-hour HH:mm."),
+          appointmentType: z.enum(["Annual checkup", "Follow-up visit"]),
         }),
         execute: async (argumentsValue) => JSON.stringify(await callTool("search_slots", argumentsValue)),
       });
@@ -220,13 +228,23 @@ export function TurnoDashboard() {
         if (latestCaller) latestCallerRef.current = latestCaller;
         for (const line of lines) void recordTranscript(line).catch(() => undefined);
       });
+      session.on("transport_event", (event) => {
+        if (event.type === "input_audio_buffer.speech_started") setVoicePhase("hearing");
+        if (event.type === "input_audio_buffer.speech_stopped") setVoicePhase("thinking");
+        if (event.type === "conversation.item.input_audio_transcription.completed") setVoicePhase("thinking");
+      });
+      session.on("agent_tool_start", () => setVoicePhase("thinking"));
+      session.on("audio_start", () => setVoicePhase("speaking"));
+      session.on("audio_stopped", () => setVoicePhase("listening"));
       session.on("error", (event) => {
         setNotice(String((event as { error?: unknown }).error || event));
         setCallStatus("error");
+        setVoicePhase("idle");
       });
       await session.connect({ apiKey: token.value });
       sessionRef.current = session;
       setCallStatus("live");
+      setVoicePhase("listening");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
       setCallStatus("error");
@@ -237,6 +255,7 @@ export function TurnoDashboard() {
     sessionRef.current?.close();
     sessionRef.current = null;
     setCallStatus("ready");
+    setVoicePhase("idle");
   }, []);
 
   const runGuidedDemo = useCallback(async () => {
@@ -328,6 +347,7 @@ export function TurnoDashboard() {
   const activeBooking = snapshot?.bookings.find((booking) => booking.conversationId === CONVERSATION_ID) || null;
   const events = snapshot?.events.filter((event) => event.conversationId === CONVERSATION_ID || event.conversationId === "system").slice(-9).reverse() || [];
   const statusText = callStatus === "live" ? "Live" : callStatus === "connecting" ? "Connecting" : callStatus === "demo" ? "Guided demo" : callStatus === "error" ? "Needs attention" : "Ready";
+  const voicePhaseText = voicePhase === "hearing" ? "Hearing you…" : voicePhase === "thinking" ? "Thinking…" : voicePhase === "speaking" ? "Turno is speaking" : "Microphone connected";
 
   return (
     <main className="shell">
@@ -348,8 +368,8 @@ export function TurnoDashboard() {
 
           <div className={`voice-stage voice-stage-${callStatus}`}>
             <div className="voice-orbit" aria-hidden="true"><span className="voice-core" /><span className="voice-ring voice-ring-one" /><span className="voice-ring voice-ring-two" /></div>
-            <p>{callStatus === "live" ? "Turno is listening" : callStatus === "connecting" ? "Opening a secure call" : callStatus === "demo" ? "Showing the reliable flow" : "Turno is ready to listen"}</p>
-            <span>{callStatus === "live" ? "Speak naturally. You can interrupt or change the appointment details." : `Voice uses ${REALTIME_MODEL}. The guided demo works without an API key.`}</span>
+            <p>{callStatus === "live" ? voicePhaseText : callStatus === "connecting" ? "Opening a secure call" : callStatus === "demo" ? "Showing the reliable flow" : "Turno is ready to listen"}</p>
+            <span>{callStatus === "live" ? (voicePhase === "listening" ? "Say your request now. This label changes when Turno detects speech." : "The conversation and trusted activity will update below.") : `Voice uses ${REALTIME_MODEL}. The guided demo works without an API key.`}</span>
           </div>
 
           {callStatus === "live" ? (

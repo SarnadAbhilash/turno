@@ -64,6 +64,13 @@ button { font: inherit; }
 .call-state-demo { background: var(--amber-soft); color: var(--amber); }
 .call-state-error { background: #fff0ef; color: #a03b32; }
 .voice-stage-live .voice-core, .voice-stage-demo .voice-core { box-shadow: 0 10px 34px rgba(49, 87, 213, .38), 0 0 0 7px rgba(49, 87, 213, .08); }
+.voice-stage-live .voice-ring-one { animation: voice-pulse 1.6s ease-out infinite; }
+.voice-stage-live .voice-ring-two { animation: voice-pulse 1.6s .35s ease-out infinite; }
+
+@keyframes voice-pulse {
+  0% { opacity: .85; transform: scale(.82); }
+  75%, 100% { opacity: 0; transform: scale(1.12); }
+}
 
 .transcript-card, .calendar-card, .evidence-card, .activity-card { border: 1px solid var(--line); border-radius: 16px; background: white; }
 .transcript-card { padding: 16px; }
