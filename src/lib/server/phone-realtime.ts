@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import WebSocket from "ws";
 import { REALTIME_MODEL, REALTIME_VOICE } from "@/lib/realtime-config";
+import { chooseReplyLanguage, replyLanguageInstruction, type ReplyLanguage } from "@/lib/language-style";
 import { realtimeToolDefinitions } from "@/lib/server/realtime-tools";
 import { parseAndExecuteTurnoTool } from "@/lib/server/turno-tools";
 import { getTurnoStore } from "@/lib/server/turno-store";
@@ -25,6 +26,7 @@ type RealtimeEvent = {
   name?: string;
   arguments?: string;
   transcript?: string;
+  languages?: Array<{ code?: string }>;
   error?: { message?: string };
 };
 
@@ -61,6 +63,8 @@ function attachPhoneSideband(callId: string, apiKey: string) {
   let lastCallerTranscriptAt = 0;
   let lastAssistantTranscriptAt = 0;
   let callerTranscriptVersion = 0;
+  let replyLanguage: ReplyLanguage = "English";
+  let greetingSent = false;
   let toolQueue = Promise.resolve();
 
   const waitForConfirmationTranscript = async () => {
@@ -98,7 +102,10 @@ function attachPhoneSideband(callId: string, apiKey: string) {
         output: JSON.stringify(result),
       },
     });
-    send(socket, { type: "response.create" });
+    send(socket, {
+      type: "response.create",
+      response: { instructions: replyLanguageInstruction(replyLanguage, "Continue after the completed clinic tool action.") },
+    });
   };
 
   socket.on("open", () => {
@@ -126,18 +133,12 @@ function attachPhoneSideband(callId: string, apiKey: string) {
             turn_detection: {
               type: "semantic_vad",
               eagerness: "low",
-              create_response: true,
+              create_response: false,
               interrupt_response: true,
             },
           },
           output: { voice: REALTIME_VOICE },
         },
-      },
-    });
-    send(socket, {
-      type: "response.create",
-      response: {
-        instructions: "Greet the caller now with the exact short Harbor Clinic phone greeting from your instructions, then ask how you can help.",
       },
     });
   });
@@ -150,10 +151,26 @@ function attachPhoneSideband(callId: string, apiKey: string) {
       return;
     }
 
+    if (event.type === "session.updated" && !greetingSent) {
+      greetingSent = true;
+      send(socket, {
+        type: "response.create",
+        response: {
+          instructions: "Say exactly: Thank you for calling Harbor Clinic. I'm Turno. How can I help? Do not add anything else.",
+        },
+      });
+      return;
+    }
+
     if (event.type === "conversation.item.input_audio_transcription.completed" && event.transcript?.trim()) {
       lastCallerTranscriptAt = Date.now();
       callerTranscriptVersion += 1;
+      replyLanguage = chooseReplyLanguage(event.transcript, event.languages, replyLanguage);
       store.recordTranscript(PHONE_CONVERSATION_ID, `phone-caller-${event.item_id || event.event_id}`, "caller", event.transcript);
+      send(socket, {
+        type: "response.create",
+        response: { instructions: replyLanguageInstruction(replyLanguage, event.transcript) },
+      });
       return;
     }
 
@@ -178,7 +195,10 @@ function attachPhoneSideband(callId: string, apiKey: string) {
               output: JSON.stringify({ ok: false, code: "INVALID_REQUEST", message: "The clinic system could not complete that action. Please apologize and create a handoff.", recoverable: false }),
             },
           });
-          send(socket, { type: "response.create" });
+          send(socket, {
+            type: "response.create",
+            response: { instructions: replyLanguageInstruction(replyLanguage, "Continue after the failed clinic tool action.") },
+          });
         }
       });
       return;
