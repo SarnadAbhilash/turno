@@ -103,7 +103,7 @@ The deterministic suite covers multilingual confirmation, ambiguous replies, cor
 
 ## Stack and sponsor use
 
-- **OpenAI:** `gpt-realtime-2`, Realtime Agents SDK, WebRTC audio, and function tools.
+- **OpenAI:** `gpt-realtime-2.1`, Realtime Agents SDK, WebRTC audio, and function tools.
 - **CopilotKit:** exposes the trusted application snapshot and safe frontend demo actions to an embedded agent runtime.
 - **Product code:** TypeScript, Next.js, React, Zod, SQLite with `better-sqlite3`, and Vitest.
 - **Browser agents:** progressive WebMCP tools expose read/reset/conflict actions when the browser supports the proposed API.
