@@ -2,7 +2,7 @@
 
 **A multilingual voice receptionist that makes clinic scheduling transactions dependable.**
 
-Turno is a multilingual voice receptionist for a fictional clinic. A caller can speak in Hindi, English, Spanish, or a mix; interrupt the assistant; correct appointment details; hear available times; and confirm a booking.
+Turno is a multilingual voice receptionist for a fictional clinic. A caller can move naturally between Hindi, English, Spanish, and Hinglish from turn to turn; interrupt the assistant; correct appointment details; hear available times; and confirm a booking.
 
 ## Who it is for
 
