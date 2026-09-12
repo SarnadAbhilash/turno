@@ -2,6 +2,8 @@ node_modules/
 .next/
 dist/
 coverage/
+.data/
+tsconfig.tsbuildinfo
 
 .env
 .env.local

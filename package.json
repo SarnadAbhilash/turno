@@ -1,0 +1,39 @@
+{
+  "name": "turno",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "next dev --turbopack -p 3100 -H 127.0.0.1",
+    "build": "next build",
+    "start": "next start -p 3100 -H 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "verify": "pnpm run typecheck && pnpm test && pnpm run build"
+  },
+  "dependencies": {
+    "@copilotkit/react-core": "1.70.1",
+    "@copilotkit/runtime": "1.70.3",
+    "@openai/agents": "^0.17.2",
+    "better-sqlite3": "^13.0.3",
+    "date-fns": "^4.4.0",
+    "date-fns-tz": "^3.2.0",
+    "express": "^4.22.2",
+    "next": "^15.5.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "shiki": "^3.23.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^5.0.0"
+  }
+}
