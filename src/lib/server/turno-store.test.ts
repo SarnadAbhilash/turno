@@ -51,16 +51,16 @@ describe("Turno scheduling boundary", () => {
     if (!held.ok) return;
 
     store.recordTranscript("exactly-once", "ambiguous", "caller", "That might work");
-    const ambiguous = store.confirmBooking("exactly-once", held.proposal.proposalId);
+    const ambiguous = store.confirmBooking("exactly-once", held.proposal.proposalId, "Asha Kumar");
     expect(ambiguous).toMatchObject({ ok: false, code: "CONFIRMATION_REQUIRED" });
     expect(store.snapshot("exactly-once").bookings).toHaveLength(0);
 
     store.recordTranscript("exactly-once", "clear", "caller", "Haan, book kar dijiye");
-    const first = store.confirmBooking("exactly-once", held.proposal.proposalId);
+    const first = store.confirmBooking("exactly-once", held.proposal.proposalId, "Asha Kumar");
     expect(first.ok).toBe(true);
     if (!first.ok) return;
 
-    const retry = store.confirmBooking("exactly-once", held.proposal.proposalId);
+    const retry = store.confirmBooking("exactly-once", held.proposal.proposalId, "Asha Kumar");
     expect(retry.ok).toBe(true);
     if (!retry.ok) return;
     expect(retry.duplicate).toBe(true);
@@ -76,7 +76,7 @@ describe("Turno scheduling boundary", () => {
     store.recordTranscript("conflict", "confirm", "caller", "Yes, please book it");
     expect(store.simulateConflict("conflict").ok).toBe(true);
 
-    const result = store.confirmBooking("conflict", held.proposal.proposalId);
+    const result = store.confirmBooking("conflict", held.proposal.proposalId, "Asha Kumar");
     expect(result).toMatchObject({ ok: false, code: "SLOT_UNAVAILABLE" });
     const snapshot = store.snapshot("conflict");
     expect(snapshot.bookings).toHaveLength(0);
@@ -91,7 +91,7 @@ describe("Turno scheduling boundary", () => {
     if (!held.ok) return;
     store.recordTranscript("recovery", "confirm", "caller", "Yes, please book it");
     store.simulateConflict("recovery");
-    store.confirmBooking("recovery", held.proposal.proposalId);
+    store.confirmBooking("recovery", held.proposal.proposalId, "Asha Kumar");
 
     store.searchSlots("recovery", { earliestTime: "14:00", latestTime: "15:00", appointmentType: "Follow-up visit" });
     store.searchSlots("recovery", { earliestTime: "14:00", latestTime: "15:00", appointmentType: "Follow-up visit" });

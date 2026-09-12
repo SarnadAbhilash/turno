@@ -17,7 +17,7 @@ const requestSchema = z.discriminatedUnion("tool", [
     }),
   }),
   z.object({ ...base, tool: z.literal("hold_slot"), arguments: z.object({ slotId: z.string().min(1).max(120) }) }),
-  z.object({ ...base, tool: z.literal("confirm_booking"), arguments: z.object({ proposalId: z.string().min(1).max(120), patientName: z.string().min(1).max(120).optional() }) }),
+  z.object({ ...base, tool: z.literal("confirm_booking"), arguments: z.object({ proposalId: z.string().min(1).max(120), patientName: z.string().trim().min(1).max(120) }) }),
   z.object({ ...base, tool: z.literal("create_handoff"), arguments: z.object({ reason: z.string().min(1).max(200), summary: z.string().min(1).max(1000) }) }),
 ]);
 

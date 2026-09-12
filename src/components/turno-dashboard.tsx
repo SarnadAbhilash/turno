@@ -39,7 +39,9 @@ RELIABILITY RULES:
 - If search_slots returns no slots, clearly say none match the requested constraints and ask whether the caller wants a different date or time.
 - When the caller selects a slot, call hold_slot. Read back the returned appointment details.
 - After every tool result, immediately tell the caller the outcome aloud. Never leave a tool result without a spoken follow-up.
-- Ask for a clear yes or no. Call confirm_booking only after a clear affirmative response.
+- Before asking for final confirmation, collect the caller's name if they have not already provided it. Repeat the name back with the appointment details.
+- Never guess, infer, or substitute a caller name. "Asha Kumar" exists only in the separate guided demo and must never be used as a live-call default.
+- Ask for a clear yes or no. Call confirm_booking only after the caller provided their name and then gave a clear affirmative response.
 - If confirmation is ambiguous, ask a short clarification question. Never claim success without a booking ID.
 - If a slot is unavailable or the hold expired, apologize, search again, and offer a new real slot.
 - Repeated confirmation may return the existing booking. Explain that no duplicate was made.
@@ -296,8 +298,11 @@ export function TurnoDashboard() {
       });
       const confirmBooking = tool({
         name: "confirm_booking",
-        description: "Commit the current proposal after the caller clearly confirms. The server checks the latest authoritative caller transcript and prevents duplicates.",
-        parameters: z.object({ proposalId: z.string(), patientName: z.string().default("Asha Kumar") }),
+        description: "Commit the current proposal only after the caller states their name and clearly confirms the complete appointment readback. patientName must be the name the caller actually provided; never invent or substitute a demo name. The server checks the latest authoritative caller transcript and prevents duplicates.",
+        parameters: z.object({
+          proposalId: z.string(),
+          patientName: z.string().trim().min(1).describe("The caller's name exactly as they stated it during this live conversation."),
+        }),
         execute: async (argumentsValue) => {
           if (latestCallerRef.current) await recordTranscript(latestCallerRef.current);
           return JSON.stringify(await callTool("confirm_booking", argumentsValue));

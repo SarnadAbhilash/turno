@@ -269,7 +269,7 @@ export class TurnoStore {
     return result;
   }
 
-  confirmBooking(conversationId: string, proposalId: string, patientName = "Asha Kumar"): ToolResult<{ booking: Booking; duplicate: boolean }> {
+  confirmBooking(conversationId: string, proposalId: string, patientName: string): ToolResult<{ booking: Booking; duplicate: boolean }> {
     const existing = this.db.prepare("SELECT * FROM bookings WHERE conversation_id = ? OR proposal_id = ?").get(conversationId, proposalId) as {
       id: string; conversation_id: string; proposal_id: string; slot_id: string; patient_name: string; confirmation_event_id: string; created_at: string;
     } | undefined;
