@@ -13,6 +13,16 @@ type TranscriptLine = { id: string; role: "caller" | "assistant"; text: string }
 const CONVERSATION_ID = "browser-demo";
 const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+async function readJsonResponse<T>(response: Response, operation: string): Promise<T> {
+  const body = await response.text();
+  if (!body.trim()) throw new Error(`${operation} returned an empty response (${response.status}). Please try again.`);
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    throw new Error(`${operation} returned an unreadable response (${response.status}). Please try again.`);
+  }
+}
+
 const voiceInstructions = `
 You are Turno, a voice receptionist for the fictional Harbor Clinic in Los Angeles.
 You help callers schedule an annual checkup or follow-up visit with Dr. Elena Ruiz.
@@ -67,7 +77,7 @@ export function TurnoDashboard() {
   const refresh = useCallback(async () => {
     const response = await fetch(`/api/dashboard?conversationId=${encodeURIComponent(CONVERSATION_ID)}`, { cache: "no-store" });
     if (!response.ok) throw new Error("Could not load the receptionist state.");
-    const value = (await response.json()) as DashboardSnapshot;
+    const value = await readJsonResponse<DashboardSnapshot>(response, "Loading the receptionist state");
     setSnapshot(value);
     return value;
   }, []);
@@ -88,7 +98,7 @@ export function TurnoDashboard() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ conversationId: CONVERSATION_ID, tool: toolName, arguments: argumentsValue }),
     });
-    const result = (await response.json()) as ToolResult<Record<string, unknown>>;
+    const result = await readJsonResponse<ToolResult<Record<string, unknown>>>(response, `Tool ${toolName}`);
     await refresh();
     return result;
   }, [refresh]);
@@ -134,7 +144,7 @@ export function TurnoDashboard() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "reset", conversationId: CONVERSATION_ID }),
     });
-    const result = await response.json();
+    const result = await readJsonResponse<Record<string, unknown>>(response, "Resetting the demo");
     await refresh();
     return result;
   }, [refresh]);
@@ -145,7 +155,7 @@ export function TurnoDashboard() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "simulate_conflict", conversationId: CONVERSATION_ID }),
     });
-    const result = await response.json();
+    const result = await readJsonResponse<Record<string, unknown>>(response, "Simulating the conflict");
     await refresh();
     return result;
   }, [refresh]);
@@ -155,7 +165,7 @@ export function TurnoDashboard() {
     setNotice(null);
     try {
       const tokenResponse = await fetch("/api/realtime-token", { method: "POST" });
-      const token = (await tokenResponse.json()) as { value?: string; error?: string };
+      const token = await readJsonResponse<{ value?: string; error?: string }>(tokenResponse, "Starting the voice session");
       if (!tokenResponse.ok || !token.value) throw new Error(token.error || "Could not start the voice session.");
 
       const searchSlots = tool({
