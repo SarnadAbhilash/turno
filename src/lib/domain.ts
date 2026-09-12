@@ -23,6 +23,7 @@ export type Slot = {
 
 export type TurnoEventType =
   | "reset"
+  | "call"
   | "transcript"
   | "search"
   | "hold"

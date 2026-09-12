@@ -206,9 +206,15 @@ export class TurnoStore {
       VALUES (?, ?, ?, ?, ?)
     `).run(id, conversationId, role, text.trim(), new Date().toISOString());
     if (result.changes > 0) {
-      this.emit(conversationId, "transcript", role === "caller" ? `Caller: ${text}` : `Turno: ${text}`, { transcriptId: id, role });
+      this.emit(conversationId, "transcript", role === "caller" ? `Caller: ${text}` : `Turno: ${text}`, { transcriptId: id, role, text: text.trim() });
     }
     return { ok: true as const, transcriptId: id };
+  }
+
+  recordCallStatus(conversationId: string, message: string, payload: Record<string, unknown> = {}) {
+    this.ensureConversation(conversationId);
+    this.emit(conversationId, "call", message, payload);
+    return { ok: true as const };
   }
 
   searchSlots(

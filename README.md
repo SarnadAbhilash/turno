@@ -40,6 +40,8 @@ A general-purpose voice agent can talk and call a calendar tool. Turno focuses o
 
 The browser voice experience is the main path. A real inbound phone number, cited clinic-information search, and public deployment are optional additions.
 
+The inbound phone adapter is now implemented behind a feature flag. Follow [docs/PHONE_SETUP.md](docs/PHONE_SETUP.md) to connect a Twilio number through OpenAI SIP without creating a second scheduling path.
+
 ## Try the proof without an API key
 
 The app includes deterministic buttons for the risky paths, so the reliability work is still demonstrable if venue audio, Wi-Fi, or model access fails:
@@ -100,6 +102,7 @@ The deterministic suite covers multilingual confirmation, ambiguous replies, cor
 - Coding agents: read [AGENTS.md](AGENTS.md).
 - Builders: read [docs/BUILD_SPEC.md](docs/BUILD_SPEC.md).
 - New teammates: read [docs/TEAM_GUIDE.md](docs/TEAM_GUIDE.md).
+- Phone demo: read [docs/PHONE_SETUP.md](docs/PHONE_SETUP.md).
 
 ## Stack and sponsor use
 
@@ -107,7 +110,8 @@ The deterministic suite covers multilingual confirmation, ambiguous replies, cor
 - **CopilotKit:** exposes the trusted application snapshot and safe frontend demo actions to an embedded agent runtime.
 - **Product code:** TypeScript, Next.js, React, Zod, SQLite with `better-sqlite3`, and Vitest.
 - **Browser agents:** progressive WebMCP tools expose read/reset/conflict actions when the browser supports the proposed API.
-- **Optional after the core demo:** Exa for cited public clinic logistics, Google Cloud Run for deployment, and a SIP provider for a real inbound number.
+- **Twilio + OpenAI SIP:** routes a real inbound phone number to the same Realtime assistant and trusted booking tools.
+- **Optional after the core demo:** Exa for cited public clinic logistics and Google Cloud Run for deployment.
 
 OpenRouter, Auth0, Trigger.dev, and Mozilla are hackathon sponsors but are not forced into the current build. Turno uses integrations only when they improve the product or its evidence.
 
@@ -127,7 +131,7 @@ The complete contracts and independent component guidance live in [docs/BUILD_SP
 
 ## Build status
 
-Built during the September 12, 2026 Agents Everywhere hackathon. The browser workspace, synthetic schedule, Realtime voice connection, server-side transaction boundary, guided reliability scenarios, CopilotKit context, WebMCP tools, and deterministic tests are implemented.
+Built during the September 12, 2026 Agents Everywhere hackathon. The browser workspace, synthetic schedule, Realtime voice connection, optional Twilio/OpenAI SIP phone adapter, server-side transaction boundary, guided reliability scenarios, CopilotKit context, WebMCP tools, and deterministic tests are implemented.
 
 ## Reuse disclosure
 
